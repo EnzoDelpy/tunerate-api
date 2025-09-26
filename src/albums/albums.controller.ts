@@ -34,7 +34,11 @@ export class AlbumsController {
   @UseGuards(JwtAuthGuard)
   @Get('search')
   search(@Query() searchAlbumsDto: SearchAlbumsDto) {
-    return this.albumsService.searchAlbums(searchAlbumsDto.query);
+    return this.albumsService.searchAlbums(
+      searchAlbumsDto.query,
+      searchAlbumsDto.page,
+      searchAlbumsDto.limit,
+    );
   }
 
   @ApiOperation({ summary: "Tester la validité d'un ID d'album Spotify" })

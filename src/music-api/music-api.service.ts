@@ -111,8 +111,8 @@ export class MusicApiService {
     }
   }
 
-  // Recherche d'albums
-  async searchAlbums(query: string, limit = 10): Promise<any> {
+  // Recherche d'albums (albums complets et EPs seulement, pas de singles)
+  async searchAlbums(query: string, limit = 10, offset = 0): Promise<any> {
     try {
       const token = await this.getAccessToken();
 
@@ -120,10 +120,22 @@ export class MusicApiService {
       const isLikelySpotifyId = /^[0-9A-Za-z]{22}$/.test(query);
 
       // Si ça ressemble à un ID Spotify, ajoutons "id:" à la requête
-      const searchQuery = isLikelySpotifyId ? `id:${query}` : query;
-      this.logger.debug(
-        `Searching with query: ${searchQuery} (ID format: ${isLikelySpotifyId})`,
-      );
+      let searchQuery = isLikelySpotifyId ? `id:${query}` : query;
+
+      // Le filtre pour exclure les singles et inclure seulement les albums et EPs
+      // est maintenant géré via le paramètre album_type directement
+      // Nous laissons la requête simple
+      if (!isLikelySpotifyId) {
+        // Pas besoin d'ajouter album_type dans la requête de recherche
+      }
+
+      // Demander le maximum de résultats possibles pour avoir assez après filtrage
+      // Spotify limite à 50 résultats par requête, donc on demande ce maximum
+      const apiLimit = 50; // Maximum possible par l'API Spotify
+
+      // L'API Spotify a une limite de 1000 résultats au total et 50 par requête
+      // S'assurer que notre offset est dans les limites
+      const apiOffset = Math.min(offset, 950);
 
       const response = await firstValueFrom(
         this.httpService
@@ -132,7 +144,9 @@ export class MusicApiService {
             params: {
               q: searchQuery,
               type: 'album',
-              limit,
+              album_type: 'album,single,ep', // Inclure explicitement tous les types
+              limit: apiLimit,
+              offset: apiOffset,
             },
           })
           .pipe(
@@ -143,19 +157,71 @@ export class MusicApiService {
           ),
       );
 
-      // Log des IDs d'albums pour le débogage
+      // Filtrer pour garder uniquement les albums complets et recatégoriser les singles comme EP si nécessaire
+      const filteredItems = response.data.albums.items.filter((album) => {
+        // Normaliser le type d'album pour éviter les problèmes de casse
+        const albumType = album.album_type?.toLowerCase() || '';
+
+        // Garder tous les albums
+        if (albumType === 'album') {
+          return true;
+        }
+
+        // Garder tous les EP
+        if (albumType === 'ep') {
+          return true;
+        } // Si c'est un single, vérifier le nombre de pistes
+        if (album.album_type === 'single') {
+          // Si total_tracks n'est pas défini, considérer tous les singles comme des EP par défaut
+          if (album.total_tracks === undefined) {
+            album.album_type = 'ep';
+            return true;
+          }
+
+          // Si c'est un single avec 2 pistes ou plus, on le considère comme un EP
+          if (album.total_tracks >= 2) {
+            album.album_type = 'ep';
+            return true;
+          }
+
+          // Rejeter seulement les singles avec exactement une piste
+          return false;
+        }
+
+        // Si on arrive ici, c'est un type inconnu, on le rejette
+        return false;
+      });
+
+      // Compter combien d'éléments de chaque type on a après filtrage et recatégorisation
+      const types = {};
+      filteredItems.forEach((item) => {
+        const type = item.album_type;
+        types[type] = (types[type] || 0) + 1;
+      });
+
+      // Limiter le nombre de résultats au nombre demandé
+      const limitedResults = filteredItems.slice(0, limit);
       this.logger.debug(
-        `Albums found in search - IDs: ${response.data.albums.items.map((a) => a.id).join(', ')}`,
+        `Returning ${limitedResults.length} albums/EPs out of ${filteredItems.length} filtered results`,
       );
 
-      return response.data.albums.items.map((album) => ({
-        externalId: album.id,
-        title: album.name,
-        releaseDate: album.release_date,
-        coverUrl: album.images?.[0]?.url,
-        artistName: album.artists[0]?.name,
-        artistExternalId: album.artists[0]?.id,
-      }));
+      const formattedResults = limitedResults.map((album) => {
+        // S'assurer que le type d'album est bien normalisé (en minuscules)
+        const normalizedType = album.album_type?.toLowerCase();
+
+        return {
+          externalId: album.id,
+          title: album.name,
+          releaseDate: album.release_date,
+          coverUrl: album.images?.[0]?.url,
+          artistName: album.artists[0]?.name,
+          artistExternalId: album.artists[0]?.id,
+          albumType: normalizedType, // 'album' ou 'ep' après recatégorisation
+          totalTracks: album.total_tracks || null,
+        };
+      });
+
+      return formattedResults;
     } catch (error) {
       this.logger.error('Error in searchAlbums', error);
       throw error;
@@ -168,13 +234,10 @@ export class MusicApiService {
       // Nettoyer l'ID externe au cas où il contiendrait des caractères indésirables
       const cleanExternalId = externalId.trim();
 
-      this.logger.debug(`Fetching album details for ID: ${cleanExternalId}`);
       const token = await this.getAccessToken();
 
       // URL correcte selon la documentation Spotify
       const url = `${this.baseUrl}/albums/${cleanExternalId}`;
-      this.logger.debug(`Request URL: ${url}`);
-      this.logger.debug(`token: ${token}`);
 
       const response = await firstValueFrom(
         this.httpService
@@ -226,10 +289,6 @@ export class MusicApiService {
       if (error instanceof NotFoundException) {
         // Si l'album n'est pas trouvé directement, essayons de le trouver via une recherche
         try {
-          this.logger.debug(
-            `Album not found directly, trying search for ID: ${externalId}`,
-          );
-
           // Essayons de trouver l'album via la recherche
           const searchResults = await this.searchAlbums(externalId, 5);
 
@@ -239,23 +298,14 @@ export class MusicApiService {
               (album) => album.externalId === externalId,
             );
             if (exactMatch) {
-              this.logger.debug(
-                `Found album through search: ${exactMatch.title}`,
-              );
               return exactMatch;
             }
-
-            // Essayons une recherche spécifique
-            this.logger.debug(
-              `Trying alternative approach with album ID: ${externalId}`,
-            );
 
             // Tenter d'accéder à l'album via une autre approche
             try {
               // Certains IDs peuvent avoir besoin d'être traités différemment
               // Par exemple, essayer un format différent de l'URL
               const alternativeUrl = `${this.baseUrl}/albums/${encodeURIComponent(externalId)}`;
-              this.logger.debug(`Trying alternative URL: ${alternativeUrl}`);
 
               // Obtenir un nouveau token au cas où
               const altToken = await this.getAccessToken();
@@ -268,7 +318,6 @@ export class MusicApiService {
                   .pipe(
                     catchError(() => {
                       // Si ça ne fonctionne pas, on ignore simplement cette tentative
-                      this.logger.debug('Alternative approach failed');
                       throw error;
                     }),
                   ),
@@ -290,7 +339,6 @@ export class MusicApiService {
                 })),
               };
             } catch (altError) {
-              this.logger.debug('Alternative approach failed');
               // Si l'approche alternative échoue aussi, on continue avec l'erreur originale
             }
           }
@@ -350,7 +398,6 @@ export class MusicApiService {
   // Tester si un ID d'album est valide directement avec Spotify
   async testAlbumId(albumId: string): Promise<boolean> {
     try {
-      this.logger.debug(`Testing if album ID is valid: ${albumId}`);
       const token = await this.getAccessToken();
 
       // Effectuer un test en utilisant GET avec la méthode silencieuse
@@ -371,7 +418,6 @@ export class MusicApiService {
       return true;
     } catch (error) {
       // En cas d'erreur, l'ID n'est pas valide
-      this.logger.debug(`Album ID ${albumId} is not valid: ${error.message}`);
       return false;
     }
   }

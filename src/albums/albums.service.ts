@@ -16,9 +16,25 @@ export class AlbumsService {
     private artistsService: ArtistsService,
   ) {}
 
-  // Recherche d'albums via l'API externe
-  async searchAlbums(query: string) {
-    return this.musicApiService.searchAlbums(query);
+  // Recherche d'albums via l'API externe avec pagination
+  async searchAlbums(query: string, page = 1, limit = 10) {
+    // Créer un identifiant unique basé sur l'offset plutôt que la page
+    // pour éviter les doublons entre les pages
+    const offset = (page - 1) * limit;
+
+    // Demander exactement le nombre d'éléments dont on a besoin
+    const albums = await this.musicApiService.searchAlbums(
+      query,
+      limit,
+      offset,
+    );
+
+    // Ajouter un identifiant unique basé sur la position pour chaque album
+    // pour aider le frontend à identifier les doublons
+    return albums.map((album, index) => ({
+      ...album,
+      _uniqueId: `${album.externalId || album.id}_${album.albumType}_${offset + index}`,
+    }));
   }
 
   // Recherche un album par ID externe avec correspondance approximative
@@ -67,7 +83,7 @@ export class AlbumsService {
     } catch (error) {
       // Propager l'erreur d'origine sans tentative de recherche approximative
       // Pour garantir une correspondance exacte comme demandé
-      console.log(`Error getting album with ID ${externalId}:`, error.message);
+
       throw error;
     }
   }
