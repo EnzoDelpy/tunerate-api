@@ -1,0 +1,49 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  reviews      Review[]
+}
+
+model Artist {
+  id         Int     @id @default(autoincrement())
+  externalId String  @unique
+  name       String
+  imageUrl   String?
+  albums     Album[]
+}
+
+model Album {
+  id         Int      @id @default(autoincrement())
+  externalId String   @unique
+  title      String
+  releaseDate DateTime?
+  coverUrl   String?
+  artistId   Int
+  artist     Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  reviews    Review[]
+}
+
+model Review {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  albumId   Int
+  album     Album    @relation(fields: [albumId], references: [id], onDelete: Cascade)
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@unique([userId, albumId]) // Un utilisateur ne peut noter un album qu’une seule fois
+}
